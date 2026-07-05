@@ -1,28 +1,78 @@
 #include "simulator/engine.hpp"
 
 #include <random>
+#include <thread>
+#include <vector>
 
 #include "simulator/season.hpp"
 
 namespace simulator {
 
+unsigned resolve_thread_count(const SimulationConfig& config) {
+    if (config.n_threads != 0) return config.n_threads;
+    // hardware_concurrency() may return 0 if it can't tell; fall back to 1.
+    const unsigned hw = std::thread::hardware_concurrency();
+    return hw != 0 ? hw : 1;
+}
+
 Accumulator run_simulations(const SimulationInput& input,
                             const SimulationConfig& config) {
-    Accumulator acc(input.team_count());
-    SeasonScratch scratch(input.team_count());
+    const unsigned n_threads = resolve_thread_count(config);
 
-    // seed_seq spreads a single seed across the Mersenne Twister's
-    // 2.5 KB of internal state. Seeding mt19937_64 with a bare integer
-    // (mt19937_64 rng{seed}) leaves most of that state poorly mixed for
-    // the first few thousand draws; seed_seq is the <random>-idiomatic
-    // way to initialize the full state properly.
-    std::seed_seq seq{config.seed};
-    std::mt19937_64 rng(seq);
+    // Static work split: thread t runs a fixed share, with the first
+    // `remainder` threads taking one extra so the counts sum exactly.
+    // Static beats a work queue here because all seasons cost the same;
+    // there is nothing for dynamic scheduling to balance, and a shared
+    // queue would add synchronization for zero benefit.
+    const std::uint64_t base = config.n_simulations / n_threads;
+    const std::uint64_t remainder = config.n_simulations % n_threads;
 
-    for (std::uint64_t i = 0; i < config.n_simulations; ++i)
-        simulate_season(input, scratch, rng, acc);
+    // One Accumulator per thread, allocated UP FRONT by the main thread.
+    // Each worker writes only to partials[t] -- disjoint objects, and
+    // each accumulator's count arrays live in their own heap blocks, so
+    // threads don't share (or false-share) any cache lines they write.
+    std::vector<Accumulator> partials;
+    partials.reserve(n_threads);
+    for (unsigned t = 0; t < n_threads; ++t)
+        partials.emplace_back(input.team_count());
 
-    return acc;
+    const auto worker = [&input, &config](Accumulator& acc, unsigned t,
+                                          std::uint64_t count) {
+        // THE critical decision in parallel Monte Carlo: every thread
+        // gets its own generator. Sharing one mt19937_64 across threads
+        // would be a data race (undefined behavior -- its state updates
+        // are not atomic); guarding it with a mutex would serialize the
+        // very thing we parallelized. Seeding each stream with
+        // (user seed, thread index) via seed_seq gives every thread a
+        // different, well-mixed starting state, and keeps the whole run
+        // reproducible: thread t always produces the same seasons.
+        std::seed_seq seq{config.seed, std::uint64_t(t)};
+        std::mt19937_64 rng(seq);
+        SeasonScratch scratch(acc.n_teams());
+
+        for (std::uint64_t i = 0; i < count; ++i)
+            simulate_season(input, scratch, rng, acc);
+    };
+
+    if (n_threads == 1) {
+        // Run inline: measuring single-threaded throughput shouldn't
+        // include thread startup, and debugging is nicer on one stack.
+        worker(partials[0], 0, config.n_simulations);
+        return std::move(partials[0]);
+    }
+
+    std::vector<std::thread> threads;
+    threads.reserve(n_threads);
+    for (unsigned t = 0; t < n_threads; ++t)
+        threads.emplace_back(worker, std::ref(partials[t]), t,
+                             base + (t < remainder ? 1 : 0));
+    // join() blocks until the thread finishes; joining ALL threads is
+    // the synchronization point after which reading their accumulators
+    // is safe (join formally "happens-after" everything the thread did).
+    for (std::thread& th : threads) th.join();
+
+    for (unsigned t = 1; t < n_threads; ++t) partials[0] += partials[t];
+    return std::move(partials[0]);
 }
 
 }  // namespace simulator

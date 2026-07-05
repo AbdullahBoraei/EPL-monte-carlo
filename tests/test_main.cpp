@@ -175,6 +175,37 @@ void test_accumulator_merge() {
     CHECK(a.rank_count(0, 0) == a_title + b_title);
 }
 
+// Multithreaded runs must (1) simulate exactly the requested number of
+// seasons even when it doesn't divide evenly by the thread count,
+// (2) be bit-identical for the same seed and thread count, and
+// (3) agree statistically with the single-threaded engine -- per-thread
+// RNG streams change WHICH seasons are drawn, not their distribution.
+void test_multithreaded() {
+    const SimulationInput input = make_league(6, 0.4f, 0.3f);
+
+    // 100'003 across 4 threads: the +1 remainder logic must make counts sum.
+    const Accumulator a =
+        run_simulations(input, {.n_simulations = 100'003, .seed = 5, .n_threads = 4});
+    CHECK(a.n_seasons() == 100'003);
+
+    const Accumulator b =
+        run_simulations(input, {.n_simulations = 100'003, .seed = 5, .n_threads = 4});
+    bool identical = true;
+    for (std::size_t t = 0; t < 6; ++t)
+        for (std::size_t r = 0; r < 6; ++r)
+            identical &= a.rank_count(TeamId(t), r) == b.rank_count(TeamId(t), r);
+    CHECK(identical);
+
+    const Accumulator st =
+        run_simulations(input, {.n_simulations = 200'000, .seed = 6, .n_threads = 1});
+    const Accumulator mt =
+        run_simulations(input, {.n_simulations = 200'000, .seed = 6, .n_threads = 8});
+    for (std::size_t t = 0; t < 6; ++t) {
+        CHECK_NEAR(mt.mean_points(TeamId(t)), st.mean_points(TeamId(t)), 0.15);
+        CHECK_NEAR(mt.rank_prob(TeamId(t), 0), st.rank_prob(TeamId(t), 0), 0.01);
+    }
+}
+
 int main() {
     test_deterministic_league();
     test_tiebreak_uniformity();
@@ -182,6 +213,7 @@ int main() {
     test_histogram_invariants();
     test_determinism();
     test_accumulator_merge();
+    test_multithreaded();
 
     if (failures == 0) std::printf("all tests passed\n");
     else std::printf("%d check(s) FAILED\n", failures);

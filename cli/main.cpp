@@ -36,13 +36,15 @@ Args parse_args(int argc, char** argv) {
         };
         if (a == "--sims") args.config.n_simulations = std::stoull(next());
         else if (a == "--seed") args.config.seed = std::stoull(next());
+        else if (a == "--threads") args.config.n_threads = unsigned(std::stoul(next()));
         else if (a == "--out") args.out_path = next();
         else if (args.fixtures_path.empty()) args.fixtures_path = a;
         else { std::fprintf(stderr, "unexpected argument: %s\n", a.c_str()); std::exit(2); }
     }
     if (args.fixtures_path.empty()) {
         std::fprintf(stderr,
-                     "usage: %s <fixtures.csv> [--sims N] [--seed S] [--out results.csv]\n",
+                     "usage: %s <fixtures.csv> [--sims N] [--seed S] "
+                     "[--threads T] [--out results.csv]\n",
                      argv[0]);
         std::exit(2);
     }
@@ -99,9 +101,11 @@ int main(int argc, char** argv) {
                         actual_points[t]);
         }
 
-        std::printf("\n%llu seasons in %.3f s  (%.0f seasons/sec, single-threaded)\n",
+        std::printf("\n%llu seasons in %.3f s  (%.0f seasons/sec on %u thread%s)\n",
                     (unsigned long long)acc.n_seasons(), seconds,
-                    double(acc.n_seasons()) / seconds);
+                    double(acc.n_seasons()) / seconds,
+                    simulator::resolve_thread_count(args.config),
+                    simulator::resolve_thread_count(args.config) == 1 ? "" : "s");
 
         if (!args.out_path.empty()) {
             simulator::write_results_csv(args.out_path, input, acc);
