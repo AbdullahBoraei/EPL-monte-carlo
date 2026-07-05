@@ -16,7 +16,6 @@ endif()
 # executable is a thin consumer.
 add_library(simulator STATIC
   src/csv.cpp
-  src/season.cpp
   src/engine.cpp
 )
 target_include_directories(simulator PUBLIC include)
@@ -25,6 +24,10 @@ target_compile_options(simulator PRIVATE -Wall -Wextra)
 add_executable(simulate cli/main.cpp)
 target_link_libraries(simulate PRIVATE simulator)
 target_compile_options(simulate PRIVATE -Wall -Wextra)
+
+add_executable(benchmark bench/benchmark.cpp)
+target_link_libraries(benchmark PRIVATE simulator)
+target_compile_options(benchmark PRIVATE -Wall -Wextra)
 
 enable_testing()
 add_executable(tests tests/test_main.cpp)

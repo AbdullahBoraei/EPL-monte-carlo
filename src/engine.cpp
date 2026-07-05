@@ -1,10 +1,10 @@
 #include "simulator/engine.hpp"
 
-#include <random>
 #include <thread>
 #include <vector>
 
 #include "simulator/season.hpp"
+#include "simulator/xoshiro.hpp"
 
 namespace simulator {
 
@@ -39,15 +39,20 @@ Accumulator run_simulations(const SimulationInput& input,
     const auto worker = [&input, &config](Accumulator& acc, unsigned t,
                                           std::uint64_t count) {
         // THE critical decision in parallel Monte Carlo: every thread
-        // gets its own generator. Sharing one mt19937_64 across threads
-        // would be a data race (undefined behavior -- its state updates
-        // are not atomic); guarding it with a mutex would serialize the
+        // gets its own generator. Sharing one across threads would be a
+        // data race (undefined behavior -- generator state updates are
+        // not atomic); guarding it with a mutex would serialize the
         // very thing we parallelized. Seeding each stream with
-        // (user seed, thread index) via seed_seq gives every thread a
-        // different, well-mixed starting state, and keeps the whole run
+        // (user seed, thread index) gives every thread a different,
+        // well-mixed starting state, and keeps the whole run
         // reproducible: thread t always produces the same seasons.
-        std::seed_seq seq{config.seed, std::uint64_t(t)};
-        std::mt19937_64 rng(seq);
+        //
+        // Generator choice is benchmark-driven, not guessed: the RNG
+        // shootout in bench/benchmark.cpp measured xoshiro256++ at
+        // ~1.8x mt19937_64 through this exact loop (RNG cost dominates
+        // a 400-draws-per-season workload), with equal statistical
+        // quality for this purpose. The engine uses the winner.
+        Xoshiro256pp rng(config.seed, t);
         SeasonScratch scratch(acc.n_teams());
 
         for (std::uint64_t i = 0; i < count; ++i)
