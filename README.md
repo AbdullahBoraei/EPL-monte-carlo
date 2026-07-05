@@ -1,17 +1,14 @@
 # epl-monte-carlo
 
-A multithreaded Monte Carlo season simulator in modern C++ (C++20, zero
-dependencies). It takes per-match outcome probabilities produced by my
+A multithreaded Monte Carlo season simulator in C++20 with zero dependencies.
+It takes per-match outcome probabilities from my
 [EPL match predictor](https://github.com/AbdullahBoraei/EPL-match-prediction)
 (Python, logistic regression) and plays out the full Premier League season
-**over a million times per second** to answer questions a single prediction
-can't:
+more than a million times per second. It answers season-level questions:
 
-- What is each team's probability of winning the title, making the top 4, or
-  being relegated?
-- What does the expected final table look like — with uncertainty, not just
-  point estimates?
-- How much does one specific result swing the title race? (what-if analysis)
+- each team's probability of winning the title, reaching the top 4, or going down
+- the expected final table, with a spread around each team's points total
+- the shift in every team's chances after you pin one match to a chosen result
 
 ## The two-language pipeline
 
@@ -28,11 +25,11 @@ EPL-match-prediction (Python)                epl-monte-carlo (C++)
                                           P(relegation), xPts ± σ
 ```
 
-Each language does what it's best at: Python owns modeling (pandas,
-scikit-learn); C++ owns the compute-bound simulation. The interface is
-deliberately boring — a CSV each way — so either side can be swapped out.
-`scripts/export_fixtures.py` in the predictor repo produces the input;
-a copy for 2025-26 ships in `data/` so this repo runs standalone.
+Each language does the work it suits: Python owns the modeling (pandas,
+scikit-learn) and C++ owns the compute-bound simulation. A plain CSV crosses
+the boundary in each direction, so you can swap either side without touching
+the other. `scripts/export_fixtures.py` in the predictor repo produces the
+input, and `data/` ships a copy for 2025-26, so this repo runs on its own.
 
 ## Quick start
 
@@ -43,8 +40,8 @@ cmake --build build
 ./build/simulate data/fixtures_2025_26.csv --sims 1000000 --out results.csv
 ```
 
-Sample output (1M simulated 2025-26 seasons, model probabilities fixed
-before the season):
+Sample output (1M simulated 2025-26 seasons, from probabilities the model
+set before the season):
 
 ```
 team                    xPts    title    top4   releg actual pts
@@ -56,18 +53,18 @@ Wolves            36.9 ±  7.1    0.0%   0.0%   51.6%     20
 Burnley           30.6 ±  6.7    0.0%   0.0%   83.1%     22
 ```
 
-The `actual pts` column is the real season: the model called Arsenal's title
-(38.6%, its favorite) but reality also produced genuine tail events — Man
-United finished on 71 points (simulated xPts 52.2, top-4 probability 5.8%)
-and Sunderland survived a 39.2% relegation probability by 15 points. A
-±7.5-point standard deviation on every team's total is the honest headline:
-single-season football is *noisy*, and a point forecast without a
-distribution around it is close to meaningless.
+The `actual pts` column shows the real season. The model made Arsenal its
+title favorite at 38.6%, and Arsenal won the league. The season also produced
+tail outcomes: Man United finished on 71 points against a simulated 52.2
+expected points and a 5.8% top-4 probability, and Sunderland outlived a 39.2%
+relegation probability by 15 points. Each team's simulated total carries a
+standard deviation near 7.5 points; a single season leaves that much to
+chance, and a point forecast hides that spread.
 
 ### What-if analysis
 
-Force any fixture to a chosen result and measure how every team's fate
-shifts against the baseline:
+Pin any fixture to a chosen result and measure the shift in every team's
+chances against the baseline:
 
 ```
 $ ./build/simulate data/fixtures_2025_26.csv --sims 2000000 --force 327=A
@@ -80,32 +77,34 @@ Man City           70.6   -2.0 |  22.8%   -11.7 |  79.1%    -6.1
 Liverpool          67.3   +0.0 |  12.6%    -0.7 |  64.4%    +0.1
 ```
 
-One April result at the Etihad swings the title race by ~25 percentage
-points combined, while everyone outside the top two barely moves.
-Implementation note: the hot loop has no concept of "forced" — conditioning
-is done by editing that fixture's distribution to put all probability mass
-on one outcome (`force_outcome` in `types.hpp`).
+One April result at the Etihad moves the top two's title probabilities by a
+combined 25 percentage points, while every other team shifts by less than
+one. The hot loop contains zero code for forced matches: `force_outcome`
+in `types.hpp` edits that fixture's distribution so the chosen outcome
+carries the full probability mass.
 
 ## Performance
 
-Measured on an Apple M2 (4 performance + 4 efficiency cores), Apple clang 14,
-`-O3`. Methodology: untimed warm-up run, then median of 3 (`bench/benchmark.cpp`).
+I measured on an Apple M2 (4 performance + 4 efficiency cores) with Apple
+clang 14 at `-O3`. Each configuration runs after an untimed warm-up, and the
+tables report the median of three runs (`bench/benchmark.cpp`).
 
-**Generator shootout** — identical hot loop, generator swapped via template
-parameter:
+**Generator comparison.** The templated hot loop lets the benchmark swap the
+generator and hold every other instruction fixed:
 
 | generator    | seasons/sec | relative |
 |--------------|-------------|----------|
 | mt19937_64   |     131,221 | 1.00x    |
-| xoshiro256++ |     241,400 | **1.84x** |
+| xoshiro256++ |     241,400 | 1.84x    |
 
-With ~400 random draws per season, generator cost is first-order.
-xoshiro256++ (32 bytes of state, a few xor/shift/rotate ops per draw) beats
-the Mersenne Twister (2.5 KB of state) by 1.84x at equal statistical quality
-for this purpose — so the engine uses it. The decision is reproducible:
-run `./build/benchmark`.
+A season consumes 380 match draws plus a 20-element shuffle, so generator
+cost sets the pace. xoshiro256++ keeps 32 bytes of state and updates it with
+a handful of xor, shift, and rotate operations, while std::mt19937_64
+carries 2.5 KB. Both pass the standard statistical test suites for this
+workload, so I picked xoshiro256++ as the engine default given the 1.84x
+margin. Run `./build/benchmark` to reproduce the decision.
 
-**Thread scaling** — full engine, 1M seasons:
+**Thread scaling.** Full engine, 1M seasons:
 
 | threads | seasons/sec | speedup | efficiency |
 |---------|-------------|---------|------------|
@@ -114,80 +113,84 @@ run `./build/benchmark`.
 |       4 |     848,522 |   3.55x |        89% |
 |       8 |   1,092,879 |   4.57x |        57% |
 
-**1.09M seasons/sec** end to end — 10 million full seasons in 9.3 s. Scaling
-is near-perfect to 4 threads (the M2's performance cores), then flattens as
-work spills onto efficiency cores: 8x on a 4P+4E chip is physically
-impossible, and reporting 4.57x with the explanation beats pretending
-otherwise. Combined with the RNG swap, total throughput improved **8.6x**
-over the first correct implementation — 1.84x from measuring, 4.57x from
-threading.
+The engine reaches 1.09M seasons per second, or 10 million full seasons in
+9.3 s. Efficiency holds at 89% and above through 4 threads, which matches
+the M2's count of performance cores; past that, work spills onto the
+efficiency cores and the curve flattens. The 4P+4E topology caps the
+achievable speedup below 8x, and the table reports the measured 4.57x
+together with that cause. The generator swap and the threading combine for
+an 8.6x gain over the first correct implementation.
 
 ## Design
 
-The library (`include/simulator/`, `src/`) is built around a few deliberate
-decisions:
-
-- **Hot/cold data separation.** A fixture is 12 bytes: two `uint16_t` team
-  ids and a two-value CDF (`float`). Team names, dates, actual results live
-  in separate arrays the simulation never touches; the whole season's
-  working set is ~4.5 KB — a fraction of L1 cache. No strings, pointers, or
-  allocations exist anywhere in the hot loop.
-- **CDF precomputation.** Probabilities are stored pre-accumulated, so
-  sampling a match outcome is one uniform draw and two comparisons.
-- **Mergeable accumulator.** Statistics are integer counts (a rank
-  histogram per team, plus points sums) — exact, no float drift, and two
-  accumulators combine by addition. That property *is* the threading
-  design: each thread fills its own, merged after `join()`. No mutex or
-  atomic appears in the codebase.
-- **Per-thread RNG streams.** Each worker owns a generator seeded with
-  (user seed, thread index). Same seed + same thread count → bit-identical
-  results, independent of OS scheduling, because work is split statically.
-- **Templated hot loop.** `simulate_season<URBG>` is generic over the
-  generator (any *UniformRandomBitGenerator*), which is what made the
-  benchmark shootout a one-variable experiment and costs nothing at
-  runtime — each instantiation inlines the generator into the loop.
-- **Random tie-breaking, on purpose.** The model predicts outcomes, not
-  scorelines, so goal difference is unmodeled. Points ties are broken
-  uniformly at random (shuffle + stable sort — the shuffle survives within
-  tied groups), which is symmetric across teams rather than inventing fake
-  goals.
+- **Hot/cold data separation.** A fixture occupies 12 bytes: two `uint16_t`
+  team ids and a two-value CDF in `float`. Separate arrays hold team names,
+  dates, and actual results, and the simulation reads none of them. The
+  season's working set spans 4.5 KB and fits in a slice of L1 cache,
+  and the hot loop touches flat arrays of integers and floats from start to
+  finish.
+- **CDF precomputation.** The loader stores each fixture's probabilities
+  pre-accumulated, so one uniform draw and two comparisons decide a match.
+- **Mergeable accumulator.** The statistics live as integer counts (a rank
+  histogram per team plus points sums), which stay exact over millions of
+  seasons, and two accumulators combine by addition. That property carries
+  the threading design: each thread fills its own accumulator, the engine
+  merges them after `join()`, and the hot path synchronizes at that single
+  point.
+- **Per-thread RNG streams.** Each worker owns a generator seeded with the
+  user seed and its thread index. A run with a given seed and thread count
+  reproduces bit for bit, independent of OS scheduling, because the engine
+  splits the work into fixed shares.
+- **Templated hot loop.** `simulate_season<URBG>` accepts any
+  *UniformRandomBitGenerator*, which made the generator comparison a
+  one-variable experiment at zero runtime cost: each instantiation inlines
+  the generator into the loop.
+- **Random tie-breaking by design.** The model predicts three-way outcomes,
+  so goal difference sits outside the simulation. Points ties
+  resolve by a draw with equal probability across the tied teams (a shuffle
+  followed by a stable sort, which preserves the shuffled order inside tied
+  groups), and the symmetry protects every team from an artifact advantage.
 
 ## Correctness
 
-Monte Carlo bugs don't crash — they quietly skew distributions. The test
-suite (`tests/test_main.cpp`, plain asserts, no framework) checks against
-things known *exactly*:
+A bug in a Monte Carlo engine tends to skew distributions while the program
+keeps running, so the test suite (`tests/test_main.cpp`, plain assertions)
+checks results against values known in closed form:
 
-- degenerate leagues with deterministic outcomes (exact points, zero variance)
-- an all-draws league where ranks come only from the tie-break, which must
-  be uniform
-- analytically computed expected points, E[pts] = Σ 3·P(win) + P(draw)
-  (law of large numbers, with asymmetric probabilities so index bugs can't
-  cancel)
-- structural invariants: one team per rank, one rank per team, every season
-- determinism (same seed → bit-identical) and RNG-stream independence
-- lossless accumulator merge, and single- vs multi-threaded statistical
-  agreement
-- forced outcomes occurring in 100% of simulated seasons
+- leagues with probabilities of 0 and 1, where points and ranks follow with
+  zero variance
+- an all-draws league, where the tie-break decides every rank and each team
+  must finish first in an equal share of seasons
+- expected points computed by hand from E[pts] = Σ 3·P(win) + P(draw), which
+  the simulated means must approach; the test uses asymmetric probabilities
+  so an index bug would shift the answer and fail the check
+- structural invariants: each simulated season places one team at each rank
+  and each team at one rank
+- reproducibility: a repeated seed yields identical counts, and a changed
+  seed yields different ones
+- lossless accumulator merges, plus statistical agreement between
+  single-threaded and multithreaded runs
+- forced outcomes occurring in every simulated season
 
 ## Limitations
 
-- Matches are simulated **independently** with pre-season probabilities: no
-  form update after a simulated result, no injuries, no title-race
-  psychology. The simulation propagates the model's uncertainty; it doesn't
-  add football knowledge the model lacks.
-- Outcome-level only — no scorelines, so no goal-difference tiebreaker
-  (see above).
-- Probabilities are frozen at export time; re-exporting mid-season with
-  updated form is supported by the pipeline but not automated.
+- The engine simulates matches as independent events with pre-season
+  probabilities: a simulated result leaves the following matches'
+  probabilities unchanged, so form swings, injuries, and title-race pressure
+  stay outside the model. The simulation propagates the model's uncertainty
+  and contributes zero football knowledge of its own.
+- The engine works at the outcome level; scorelines and goal-difference
+  tiebreaks require an expected-goals model (see the extensions below).
+- Probabilities freeze at export time. The pipeline supports a mid-season
+  re-export with updated form, and automating that step remains future work.
 
 ## Possible extensions
 
-- **Dynamic ratings:** update team strength after each simulated match
-  (Elo-style) so a simulated slump compounds — turns independence into a
-  Markov chain.
-- **Poisson scoreline model:** have Python export expected goals instead of
-  outcome probabilities; simulate scores, enabling real goal-difference
-  tiebreaks and "record points total" questions.
-- **SIMD batch sampling:** draw and classify multiple fixtures per
-  instruction with NEON/AVX intrinsics.
+- **Dynamic ratings:** update team strength after each simulated match, Elo
+  style, so a simulated slump compounds; this turns independent matches into
+  a Markov chain.
+- **Poisson scoreline model:** export expected goals from Python in place of
+  outcome probabilities and simulate scores, which enables goal-difference
+  tiebreaks and questions about record points totals.
+- **SIMD batch sampling:** draw and classify several fixtures per
+  instruction with NEON or AVX intrinsics.
