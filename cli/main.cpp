@@ -21,7 +21,19 @@ struct Args {
     std::string fixtures_path;
     std::string out_path;  // empty = don't write
     simulator::SimulationConfig config;
+    // What-if scenario: fixtures to force, as (match_id, outcome).
+    std::vector<std::pair<std::size_t, simulator::Outcome>> forces;
 };
+
+simulator::Outcome parse_outcome_letter(char c) {
+    switch (c) {
+        case 'H': return simulator::Outcome::HomeWin;
+        case 'D': return simulator::Outcome::Draw;
+        case 'A': return simulator::Outcome::AwayWin;
+    }
+    std::fprintf(stderr, "--force outcome must be H, D or A (got '%c')\n", c);
+    std::exit(2);
+}
 
 Args parse_args(int argc, char** argv) {
     Args args;
@@ -38,13 +50,25 @@ Args parse_args(int argc, char** argv) {
         else if (a == "--seed") args.config.seed = std::stoull(next());
         else if (a == "--threads") args.config.n_threads = unsigned(std::stoul(next()));
         else if (a == "--out") args.out_path = next();
+        else if (a == "--force") {
+            // e.g. --force 245=A  (match_id 245 ends as an away win)
+            const std::string v = next();
+            const std::size_t eq = v.find('=');
+            if (eq == std::string::npos || eq + 2 != v.size()) {
+                std::fprintf(stderr, "--force wants <match_id>=<H|D|A>, got '%s'\n",
+                             v.c_str());
+                std::exit(2);
+            }
+            args.forces.emplace_back(std::stoull(v.substr(0, eq)),
+                                     parse_outcome_letter(v[eq + 1]));
+        }
         else if (args.fixtures_path.empty()) args.fixtures_path = a;
         else { std::fprintf(stderr, "unexpected argument: %s\n", a.c_str()); std::exit(2); }
     }
     if (args.fixtures_path.empty()) {
         std::fprintf(stderr,
                      "usage: %s <fixtures.csv> [--sims N] [--seed S] "
-                     "[--threads T] [--out results.csv]\n",
+                     "[--threads T] [--out results.csv] [--force ID=H|D|A ...]\n",
                      argv[0]);
         std::exit(2);
     }
@@ -89,16 +113,57 @@ int main(int argc, char** argv) {
                       return acc.mean_points(a) > acc.mean_points(b);
                   });
 
-        std::printf("%-16s %11s %8s %7s %7s %10s\n",
-                    "team", "xPts", "title", "top4", "releg", "actual pts");
-        for (const simulator::TeamId t : teams) {
-            std::printf("%-16s %5.1f %s %4.1f %6.1f%% %5.1f%% %6.1f%% %6d\n",
-                        input.team_names[t].c_str(),
-                        acc.mean_points(t), "\xC2\xB1", acc.std_points(t),
-                        100.0 * acc.rank_prob(t, 0),
-                        100.0 * acc.prob_rank_below(t, 4),
-                        100.0 * acc.prob_rank_at_least(t, n - 3),
-                        actual_points[t]);
+        if (args.forces.empty()) {
+            std::printf("%-16s %11s %8s %7s %7s %10s\n",
+                        "team", "xPts", "title", "top4", "releg", "actual pts");
+            for (const simulator::TeamId t : teams) {
+                std::printf("%-16s %5.1f %s %4.1f %6.1f%% %5.1f%% %6.1f%% %6d\n",
+                            input.team_names[t].c_str(),
+                            acc.mean_points(t), "\xC2\xB1", acc.std_points(t),
+                            100.0 * acc.rank_prob(t, 0),
+                            100.0 * acc.prob_rank_below(t, 4),
+                            100.0 * acc.prob_rank_at_least(t, n - 3),
+                            actual_points[t]);
+            }
+        } else {
+            // What-if mode: rerun with the forced outcomes and show how
+            // every team's fate shifts relative to the baseline above.
+            simulator::SimulationInput scenario = input;  // deliberate copy
+            for (const auto& [id, outcome] : args.forces) {
+                const auto& fx = input.fixtures.at(id);
+                const char letter = outcome == simulator::Outcome::HomeWin ? 'H'
+                                  : outcome == simulator::Outcome::Draw    ? 'D' : 'A';
+                std::printf("forcing match %zu: %s  %s vs %s -> %c "
+                            "(model had H %.0f%% / D %.0f%% / A %.0f%%)\n",
+                            id, input.dates[id].c_str(),
+                            input.team_names[fx.home].c_str(),
+                            input.team_names[fx.away].c_str(), letter,
+                            100.0f * fx.cdf_home,
+                            100.0f * (fx.cdf_draw - fx.cdf_home),
+                            100.0f * (1.0f - fx.cdf_draw));
+                simulator::force_outcome(scenario, id, outcome);
+            }
+
+            const simulator::Accumulator alt =
+                simulator::run_simulations(scenario, args.config);
+
+            std::printf("\n%-16s %6s %6s | %6s %7s | %6s %7s | %6s %7s\n",
+                        "team", "xPts", "\xCE\x94", "title", "\xCE\x94pp",
+                        "top4", "\xCE\x94pp", "releg", "\xCE\x94pp");
+            for (const simulator::TeamId t : teams) {
+                std::printf("%-16s %6.1f %+6.1f | %5.1f%% %+7.1f | %5.1f%% %+7.1f "
+                            "| %5.1f%% %+7.1f\n",
+                            input.team_names[t].c_str(),
+                            alt.mean_points(t),
+                            alt.mean_points(t) - acc.mean_points(t),
+                            100.0 * alt.rank_prob(t, 0),
+                            100.0 * (alt.rank_prob(t, 0) - acc.rank_prob(t, 0)),
+                            100.0 * alt.prob_rank_below(t, 4),
+                            100.0 * (alt.prob_rank_below(t, 4) - acc.prob_rank_below(t, 4)),
+                            100.0 * alt.prob_rank_at_least(t, n - 3),
+                            100.0 * (alt.prob_rank_at_least(t, n - 3) -
+                                     acc.prob_rank_at_least(t, n - 3)));
+            }
         }
 
         std::printf("\n%llu seasons in %.3f s  (%.0f seasons/sec on %u thread%s)\n",

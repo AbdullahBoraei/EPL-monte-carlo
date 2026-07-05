@@ -52,4 +52,21 @@ struct SimulationInput {
     std::size_t team_count() const { return team_names.size(); }
 };
 
+// What-if analysis: condition the simulation on a fixture ending a
+// particular way. Implementation is just probability: forcing an
+// outcome means putting ALL probability mass on it (P=1). The hot loop
+// doesn't know the concept "forced" exists -- it samples from the CDF
+// as always, and a CDF of {1,1} can only ever produce a home win.
+// Comparing a run with a forced fixture against the baseline measures
+// exactly how much that one match moves every team's fate.
+inline void force_outcome(SimulationInput& input, std::size_t fixture_index,
+                          Outcome outcome) {
+    Fixture& fx = input.fixtures.at(fixture_index);  // .at(): bounds-checked
+    switch (outcome) {
+        case Outcome::HomeWin: fx.cdf_home = 1.0f; fx.cdf_draw = 1.0f; break;
+        case Outcome::Draw:    fx.cdf_home = 0.0f; fx.cdf_draw = 1.0f; break;
+        case Outcome::AwayWin: fx.cdf_home = 0.0f; fx.cdf_draw = 0.0f; break;
+    }
+}
+
 }  // namespace simulator

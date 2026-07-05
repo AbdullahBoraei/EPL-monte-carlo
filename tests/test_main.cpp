@@ -206,6 +206,23 @@ void test_multithreaded() {
     }
 }
 
+// Forcing an outcome must make it happen in EVERY simulated season.
+// In an otherwise all-draws 4-team league, forcing one home win gives
+// that team 3+5*1 = 8 points (always champion) and the loser 5*1 = 5
+// (always last); the untouched teams draw all 6 for 6 points each.
+void test_force_outcome() {
+    SimulationInput input = make_league(4, 0.0f, 1.0f);
+    // fixtures are (h,a) pairs in loop order; fixture 0 is Team0 v Team1.
+    force_outcome(input, 0, Outcome::HomeWin);
+
+    const Accumulator acc = run_simulations(input, {.n_simulations = 20'000, .seed = 13});
+    CHECK_NEAR(acc.mean_points(0), 8.0, 1e-12);
+    CHECK_NEAR(acc.mean_points(1), 5.0, 1e-12);
+    CHECK_NEAR(acc.mean_points(2), 6.0, 1e-12);
+    CHECK_NEAR(acc.rank_prob(0, 0), 1.0, 1e-12);  // always champion
+    CHECK_NEAR(acc.rank_prob(1, 3), 1.0, 1e-12);  // always last
+}
+
 int main() {
     test_deterministic_league();
     test_tiebreak_uniformity();
@@ -214,6 +231,7 @@ int main() {
     test_determinism();
     test_accumulator_merge();
     test_multithreaded();
+    test_force_outcome();
 
     if (failures == 0) std::printf("all tests passed\n");
     else std::printf("%d check(s) FAILED\n", failures);
