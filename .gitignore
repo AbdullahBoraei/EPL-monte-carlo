@@ -1,0 +1,8 @@
+# Build output
+build/
+
+# macOS
+.DS_Store
+
+# Local tooling
+.claude/
