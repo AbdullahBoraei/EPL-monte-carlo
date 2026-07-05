@@ -1,5 +1,6 @@
 #include "simulator/csv.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <sstream>
@@ -117,6 +118,35 @@ SimulationInput load_fixtures_csv(const std::string& path) {
     }
 
     return input;  // moved, not copied: vectors transfer by pointer swap
+}
+
+void write_results_csv(const std::string& path,
+                       const SimulationInput& input,
+                       const Accumulator& acc) {
+    std::ofstream file(path);
+    if (!file) throw std::runtime_error("cannot open for writing: " + path);
+
+    const std::size_t n = acc.n_teams();
+
+    // Sort teams by expected points for a readable file.
+    std::vector<TeamId> teams(n);
+    for (std::size_t t = 0; t < n; ++t) teams[t] = TeamId(t);
+    std::sort(teams.begin(), teams.end(), [&acc](TeamId a, TeamId b) {
+        return acc.mean_points(a) > acc.mean_points(b);
+    });
+
+    file << "team,expected_points,points_std,p_title,p_top4,p_relegation";
+    for (std::size_t r = 0; r < n; ++r) file << ",p_rank_" << (r + 1);
+    file << "\n";
+
+    for (const TeamId t : teams) {
+        file << input.team_names[t] << ',' << acc.mean_points(t) << ','
+             << acc.std_points(t) << ',' << acc.rank_prob(t, 0) << ','
+             << acc.prob_rank_below(t, 4) << ','
+             << acc.prob_rank_at_least(t, n - 3);
+        for (std::size_t r = 0; r < n; ++r) file << ',' << acc.rank_prob(t, r);
+        file << "\n";
+    }
 }
 
 }  // namespace simulator

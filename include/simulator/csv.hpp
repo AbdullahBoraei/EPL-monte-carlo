@@ -12,10 +12,18 @@
 
 #include <string>
 
+#include "simulator/accumulator.hpp"
 #include "simulator/types.hpp"
 
 namespace simulator {
 
 SimulationInput load_fixtures_csv(const std::string& path);
+
+// Output boundary: per-team probabilities and the full finishing-
+// position distribution, one row per team, sorted by expected points.
+// CSV so the Python side (pandas/matplotlib) ingests it in one line.
+void write_results_csv(const std::string& path,
+                       const SimulationInput& input,
+                       const Accumulator& acc);
 
 }  // namespace simulator
